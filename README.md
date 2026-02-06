@@ -55,19 +55,30 @@ func main() {
 
 ---
 
-## Rotation (Optional)
+## Rotation (Optional, Dual Ring)
 
-For long-running systems that only need *recent* hotness, use ring rotation to
-bound memory and naturally forget old keys.
+For long-running systems that only need *recent* hotness, use dual-ring rotation
+to bound memory and naturally forget old keys while avoiding sudden drops.
+
+Rotation keeps two rings:
+- `active`: current writes
+- `warm`: previous generation (read-only)
+
+Default merge semantics:
+- `Frequency` / `TouchAndClamp`: `max(active, warm)`
+- `TopN` / `KeysAbove`: `sum(active, warm)`
 
 ```go
 ring := hotring.NewRotatingHotRing(12, nil)
-ring.EnableNodeSampling(1_000_000, 0)   // strict cap
-ring.EnableRotation(10 * time.Minute)  // rotate periodically
+ring.EnableNodeSampling(1_000_000, 0)  // strict cap per ring
+ring.EnableRotation(10 * time.Minute) // rotate periodically
 
 ring.Touch("user:1")
 fmt.Println(ring.TopN(10))
 ```
+
+Memory note: dual ring means `~2 × cap` upper bound. If total budget is fixed,
+halve the per-ring cap.
 
 ---
 
@@ -95,6 +106,10 @@ Rotating ring helpers:
 | `EnableRotation(interval)` | Periodic rotation (<=0 disables) |
 | `Rotate()` | Manual rotation |
 | `RotationStats()` | Rotation counters + config |
+| `ActiveStats()` | Stats for active ring |
+| `WarmStats()` | Stats for warm ring |
+| `TopNMax(k)` | Top-N with max merge |
+| `KeysAboveMax(threshold)` | KeysAbove with max merge |
 
 ---
 
