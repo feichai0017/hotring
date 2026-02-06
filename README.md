@@ -57,8 +57,11 @@ func main() {
 | Method | Purpose |
 | --- | --- |
 | `Touch(key)` | Insert or increment key counter |
+| `TouchBytes([]byte)` / `TouchHash(hash, key)` | Avoid repeated hashing or string conversions |
 | `Frequency(key)` | Read-only counter lookup |
+| `FrequencyBytes/Hash` | Byte/hash lookup variants |
 | `TouchAndClamp(key, limit)` | Increment unless limit reached; for throttling |
+| `TouchAndClampBytes/Hash` | Byte/hash variants for throttling |
 | `TopN(k)` | Snapshot of hottest keys |
 | `KeysAbove(threshold)` | Keys with counters >= threshold |
 | `Stats()` | Lightweight counters + config snapshot |

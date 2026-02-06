@@ -207,6 +207,45 @@ func (h *HotRing) Touch(key string) int32 {
 	return count
 }
 
+// TouchBytes records a key access from a byte slice.
+// This converts the slice to a string, so callers that already have a hash
+// should prefer TouchHash to avoid extra hashing work.
+func (h *HotRing) TouchBytes(key []byte) int32 {
+	if h == nil || len(key) == 0 {
+		return 0
+	}
+	return h.Touch(string(key))
+}
+
+// TouchHash records a key access using a precomputed hash value.
+// The hash must be computed with the same function as the ring (default xxhash).
+// Passing a mismatched hash can create duplicate nodes for the same key.
+func (h *HotRing) TouchHash(hash uint32, key string) int32 {
+	if h == nil || key == "" {
+		return 0
+	}
+	h.touches.Add(1)
+	slot, slots := h.slotState()
+	index, tag := h.hashPartsFromHash(hash)
+	compareItem := NewNode(key, tag)
+	node, inserted := h.findOrInsert(index, compareItem, slots, slot)
+	if node == nil {
+		return 0
+	}
+	if inserted {
+		h.inserts.Add(1)
+		h.nodes.Add(1)
+	}
+	if inserted && slots == 0 {
+		node.ResetCounter()
+	}
+	count := h.incrementNode(node, slots, slot)
+	if obs := h.getObserver(); obs != nil {
+		obs.OnTouch(key, count)
+	}
+	return count
+}
+
 // Frequency returns the current access counter for key without mutating state.
 func (h *HotRing) Frequency(key string) int32 {
 	if h == nil || key == "" {
@@ -214,6 +253,26 @@ func (h *HotRing) Frequency(key string) int32 {
 	}
 	slot, slots := h.slotState()
 	index, tag := h.hashParts(key)
+	node := h.search(index, NewNode(key, tag))
+	return h.nodeCount(node, slots, slot)
+}
+
+// FrequencyBytes returns the current access counter for a byte slice key.
+func (h *HotRing) FrequencyBytes(key []byte) int32 {
+	if h == nil || len(key) == 0 {
+		return 0
+	}
+	return h.Frequency(string(key))
+}
+
+// FrequencyHash returns the current access counter using a precomputed hash.
+// The hash must be computed with the same function as the ring.
+func (h *HotRing) FrequencyHash(hash uint32, key string) int32 {
+	if h == nil || key == "" {
+		return 0
+	}
+	slot, slots := h.slotState()
+	index, tag := h.hashPartsFromHash(hash)
 	node := h.search(index, NewNode(key, tag))
 	return h.nodeCount(node, slots, slot)
 }
@@ -230,6 +289,59 @@ func (h *HotRing) TouchAndClamp(key string, limit int32) (count int32, limited b
 	h.touches.Add(1)
 	slot, slots := h.slotState()
 	index, tag := h.hashParts(key)
+	compareItem := NewNode(key, tag)
+	node, inserted := h.findOrInsert(index, compareItem, slots, slot)
+	if node == nil {
+		return 0, false
+	}
+	if inserted {
+		h.inserts.Add(1)
+		h.nodes.Add(1)
+	}
+	if inserted && slots == 0 {
+		node.ResetCounter()
+	}
+	current := h.nodeCount(node, slots, slot)
+	if current >= limit {
+		h.clamps.Add(1)
+		if obs := h.getObserver(); obs != nil {
+			obs.OnClamp(key, limit, current)
+		}
+		return current, true
+	}
+	count = h.incrementNode(node, slots, slot)
+	limited = count >= limit
+	if limited {
+		h.clamps.Add(1)
+		if obs := h.getObserver(); obs != nil {
+			obs.OnClamp(key, limit, count)
+		}
+	} else if obs := h.getObserver(); obs != nil {
+		obs.OnTouch(key, count)
+	}
+	return count, limited
+}
+
+// TouchAndClampBytes is the byte-slice version of TouchAndClamp.
+func (h *HotRing) TouchAndClampBytes(key []byte, limit int32) (count int32, limited bool) {
+	if h == nil || len(key) == 0 {
+		return 0, false
+	}
+	return h.TouchAndClamp(string(key), limit)
+}
+
+// TouchAndClampHash is the hash-based version of TouchAndClamp.
+// The hash must be computed with the same function as the ring.
+func (h *HotRing) TouchAndClampHash(hash uint32, key string, limit int32) (count int32, limited bool) {
+	if h == nil || key == "" {
+		return 0, false
+	}
+	if limit <= 0 {
+		return h.TouchHash(hash, key), false
+	}
+	h.touches.Add(1)
+	slot, slots := h.slotState()
+	index, tag := h.hashPartsFromHash(hash)
 	compareItem := NewNode(key, tag)
 	node, inserted := h.findOrInsert(index, compareItem, slots, slot)
 	if node == nil {
@@ -360,6 +472,10 @@ func (h *HotRing) KeysAbove(threshold int32) []Item {
 func (h *HotRing) hashParts(key string) (index uint32, tag uint32) {
 	hashVal := h.hashFn(key)
 	return hashVal & h.hashMask, hashVal & (^h.hashMask)
+}
+
+func (h *HotRing) hashPartsFromHash(hash uint32) (index uint32, tag uint32) {
+	return hash & h.hashMask, hash & (^h.hashMask)
 }
 
 func (h *HotRing) search(index uint32, compareItem *Node) *Node {
