@@ -74,7 +74,7 @@ func TestRotatingHotRingClampMax(t *testing.T) {
 	if freq := r.Frequency("hot"); freq != 2 {
 		t.Fatalf("expected frequency max 2, got %d", freq)
 	}
-	if top := r.TopN(1); len(top) != 1 || top[0].Count != 3 {
-		t.Fatalf("expected top count 3 after active increment, got %+v", top)
+	if top := r.TopN(1); len(top) != 1 || top[0].Count != 4 {
+		t.Fatalf("expected top count 4 after active refresh, got %+v", top)
 	}
 }

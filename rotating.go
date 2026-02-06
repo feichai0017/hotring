@@ -159,9 +159,6 @@ func (r *RotatingHotRing) TouchAndClamp(key string, limit int32) (int32, bool) {
 	warmCount := int32(0)
 	if warm := r.warm.Load(); warm != nil {
 		warmCount = warm.Frequency(key)
-		if warmCount >= limit {
-			return warmCount, true
-		}
 	}
 	activeCount, limited := active.TouchAndClamp(key, limit)
 	combined := maxCount(activeCount, warmCount)
