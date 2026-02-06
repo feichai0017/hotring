@@ -13,6 +13,7 @@ HotRing is designed to be a **system-level hotness signal** rather than a cache 
 - **Periodic decay** for long-term cooling
 - **Top-N snapshots** for diagnostics and scheduling
 - **Touch-and-clamp** for throttling hot keys
+- **Node cap + stable sampling** for high-cardinality control
 
 ---
 
@@ -65,6 +66,7 @@ func main() {
 | `SnapshotTopN(k)` | Timestamped Top-N snapshot |
 | `EnableSlidingWindow(slots, dur)` | Short-term hotness |
 | `EnableDecay(interval, shift)` | Long-term cooling |
+| `EnableNodeSampling(cap, sampleBits)` | Cap node growth with stable sampling |
 | `SetObserver(obs)` | Optional hooks for observability |
 
 ---

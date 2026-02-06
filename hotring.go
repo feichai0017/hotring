@@ -36,6 +36,10 @@ type HotRing struct {
 	clamps    atomic.Uint64
 	decayRuns atomic.Uint64
 	nodes     atomic.Uint64
+	nodeCap   atomic.Uint64
+
+	sampleMask  atomic.Uint32
+	sampleDrops atomic.Uint64
 
 	observer atomic.Pointer[observerHolder]
 
@@ -94,6 +98,29 @@ func (h *HotRing) EnableDecay(interval time.Duration, shift uint32) {
 	h.decayMu.Unlock()
 
 	go h.decayLoop(stop, interval, shift)
+}
+
+// EnableNodeSampling caps node growth and applies stable sampling once the cap is reached.
+// cap <= 0 disables the cap. sampleBits controls the sampling rate (1/2^sampleBits).
+// sampleBits == 0 means no sampling when the cap is exceeded (strict cap).
+func (h *HotRing) EnableNodeSampling(cap uint64, sampleBits uint8) {
+	if h == nil {
+		return
+	}
+	if cap == 0 {
+		h.nodeCap.Store(0)
+		h.sampleMask.Store(0)
+		return
+	}
+	if sampleBits > 31 {
+		sampleBits = 31
+	}
+	var mask uint32
+	if sampleBits > 0 {
+		mask = (1 << sampleBits) - 1
+	}
+	h.nodeCap.Store(cap)
+	h.sampleMask.Store(mask)
 }
 
 // Close releases background resources attached to the ring.
@@ -187,9 +214,9 @@ func (h *HotRing) Touch(key string) int32 {
 	}
 	h.touches.Add(1)
 	slot, slots := h.slotState()
-	index, tag := h.hashParts(key)
+	hashVal, index, tag := h.hashParts(key)
 	compareItem := NewNode(key, tag)
-	node, inserted := h.findOrInsert(index, compareItem, slots, slot)
+	node, inserted := h.findOrInsert(index, compareItem, slots, slot, hashVal)
 	if node == nil {
 		return 0
 	}
@@ -213,7 +240,7 @@ func (h *HotRing) Frequency(key string) int32 {
 		return 0
 	}
 	slot, slots := h.slotState()
-	index, tag := h.hashParts(key)
+	_, index, tag := h.hashParts(key)
 	node := h.search(index, NewNode(key, tag))
 	return h.nodeCount(node, slots, slot)
 }
@@ -229,9 +256,9 @@ func (h *HotRing) TouchAndClamp(key string, limit int32) (count int32, limited b
 	}
 	h.touches.Add(1)
 	slot, slots := h.slotState()
-	index, tag := h.hashParts(key)
+	hashVal, index, tag := h.hashParts(key)
 	compareItem := NewNode(key, tag)
-	node, inserted := h.findOrInsert(index, compareItem, slots, slot)
+	node, inserted := h.findOrInsert(index, compareItem, slots, slot, hashVal)
 	if node == nil {
 		return 0, false
 	}
@@ -267,7 +294,7 @@ func (h *HotRing) Remove(key string) {
 	if h == nil || key == "" {
 		return
 	}
-	index, tag := h.hashParts(key)
+	_, index, tag := h.hashParts(key)
 	compareItem := NewNode(key, tag)
 	bucket := &h.buckets[index]
 	for {
@@ -357,9 +384,9 @@ func (h *HotRing) KeysAbove(threshold int32) []Item {
 	return items
 }
 
-func (h *HotRing) hashParts(key string) (index uint32, tag uint32) {
-	hashVal := h.hashFn(key)
-	return hashVal & h.hashMask, hashVal & (^h.hashMask)
+func (h *HotRing) hashParts(key string) (hashVal uint32, index uint32, tag uint32) {
+	hashVal = h.hashFn(key)
+	return hashVal, hashVal & h.hashMask, hashVal & (^h.hashMask)
 }
 
 func (h *HotRing) search(index uint32, compareItem *Node) *Node {
@@ -375,7 +402,7 @@ func (h *HotRing) search(index uint32, compareItem *Node) *Node {
 }
 
 // findOrInsert keeps the bucket sorted by (tag,key) using CAS on the head or predecessor.
-func (h *HotRing) findOrInsert(index uint32, compareItem *Node, slots int, slot int64) (*Node, bool) {
+func (h *HotRing) findOrInsert(index uint32, compareItem *Node, slots int, slot int64, hashVal uint32) (*Node, bool) {
 	bucket := &h.buckets[index]
 	for {
 		head := bucket.Load()
@@ -392,6 +419,11 @@ func (h *HotRing) findOrInsert(index uint32, compareItem *Node, slots int, slot 
 			curr = curr.Next()
 		}
 
+		if !h.allowInsert(hashVal) {
+			h.sampleDrops.Add(1)
+			return nil, false
+		}
+
 		newNode := NewNode(compareItem.key, compareItem.tag)
 		if slots > 0 {
 			newNode.ResetCounterWithWindow(slots, slot)
@@ -406,4 +438,19 @@ func (h *HotRing) findOrInsert(index uint32, compareItem *Node, slots int, slot 
 			return newNode, true
 		}
 	}
+}
+
+func (h *HotRing) allowInsert(hashVal uint32) bool {
+	cap := h.nodeCap.Load()
+	if cap == 0 {
+		return true
+	}
+	if h.nodes.Load() < cap {
+		return true
+	}
+	mask := h.sampleMask.Load()
+	if mask == 0 {
+		return false
+	}
+	return (hashVal & mask) == 0
 }

@@ -11,10 +11,13 @@ type Stats struct {
 	WindowSlotDuration time.Duration `json:"window_slot_duration"`
 	DecayInterval      time.Duration `json:"decay_interval"`
 	DecayShift         uint32        `json:"decay_shift"`
+	NodeCap            uint64        `json:"node_cap"`
+	SampleMask         uint32        `json:"sample_mask"`
 	Touches            uint64        `json:"touches"`
 	Inserts            uint64        `json:"inserts"`
 	Removes            uint64        `json:"removes"`
 	Clamps             uint64        `json:"clamps"`
+	SampleDrops        uint64        `json:"sample_drops"`
 	DecayRuns          uint64        `json:"decay_runs"`
 	LastDecayUnix      int64         `json:"last_decay_unix"`
 }
@@ -48,10 +51,13 @@ func (h *HotRing) Stats() Stats {
 		WindowSlotDuration: time.Duration(h.windowSlotDur.Load()),
 		DecayInterval:      time.Duration(h.decayInterval.Load()),
 		DecayShift:         h.decayShift.Load(),
+		NodeCap:            h.nodeCap.Load(),
+		SampleMask:         h.sampleMask.Load(),
 		Touches:            h.touches.Load(),
 		Inserts:            h.inserts.Load(),
 		Removes:            h.removes.Load(),
 		Clamps:             h.clamps.Load(),
+		SampleDrops:        h.sampleDrops.Load(),
 		DecayRuns:          h.decayRuns.Load(),
 		LastDecayUnix:      h.lastDecayUnix.Load(),
 	}

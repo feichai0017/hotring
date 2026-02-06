@@ -11,12 +11,14 @@ type Node struct {
 	next  atomic.Pointer[Node]
 	count int32
 
-	window       []int32
+	window       []uint16
 	windowTotal  int32
 	windowPos    int
 	windowSlotID int64
 	windowLock   uint32
 }
+
+const windowSlotMax = ^uint16(0)
 
 func NewNode(key string, tag uint32) *Node {
 	return &Node{
@@ -92,7 +94,7 @@ func (n *Node) resetWindowLocked(slots int, slotID int64) {
 		return
 	}
 	if len(n.window) != slots {
-		n.window = make([]int32, slots)
+		n.window = make([]uint16, slots)
 	} else {
 		for i := range n.window {
 			n.window[i] = 0
@@ -132,7 +134,7 @@ func (n *Node) advanceWindowLocked(slots int, slotID int64) {
 	}
 	for steps > 0 {
 		n.windowPos = (n.windowPos + 1) % slots
-		n.windowTotal -= n.window[n.windowPos]
+		n.windowTotal -= int32(n.window[n.windowPos])
 		n.window[n.windowPos] = 0
 		steps--
 	}
@@ -145,8 +147,11 @@ func (n *Node) incrementWindow(slots int, slotID int64) int32 {
 	}
 	n.lockWindow()
 	n.advanceWindowLocked(slots, slotID)
-	n.window[n.windowPos]++
-	n.windowTotal++
+	current := n.window[n.windowPos]
+	if current < windowSlotMax {
+		n.window[n.windowPos] = current + 1
+		n.windowTotal++
+	}
 	total := n.windowTotal
 	n.unlockWindow()
 	return total

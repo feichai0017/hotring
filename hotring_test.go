@@ -130,3 +130,42 @@ func TestHotRingDecayLoop(t *testing.T) {
 		t.Fatalf("expected decay to reduce count, still %d", freq)
 	}
 }
+
+func TestHotRingNodeCapSampling(t *testing.T) {
+	hash := func(key string) uint32 {
+		switch key {
+		case "base":
+			return 0
+		case "even":
+			return 2
+		case "odd":
+			return 3
+		default:
+			return 1
+		}
+	}
+
+	r := NewHotRing(2, hash)
+	r.EnableNodeSampling(1, 1) // cap=1, allow only even hashes once capped
+
+	if count := r.Touch("base"); count != 1 {
+		t.Fatalf("expected base to insert with count 1, got %d", count)
+	}
+	if count := r.Touch("odd"); count != 0 {
+		t.Fatalf("expected odd to be sampled out, got %d", count)
+	}
+	if freq := r.Frequency("odd"); freq != 0 {
+		t.Fatalf("expected odd to be absent, got %d", freq)
+	}
+	if count := r.Touch("even"); count != 1 {
+		t.Fatalf("expected even to be sampled in, got %d", count)
+	}
+
+	stats := r.Stats()
+	if stats.Nodes < 2 {
+		t.Fatalf("expected at least 2 nodes after sampling insert, got %d", stats.Nodes)
+	}
+	if stats.SampleDrops == 0 {
+		t.Fatalf("expected sample drops to be recorded")
+	}
+}
