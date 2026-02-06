@@ -66,6 +66,7 @@ Rotation keeps two rings:
 
 Default merge semantics:
 - `Frequency` / `TouchAndClamp`: `max(active, warm)`
+- `Touch`: returns `max(active, warm)` after incrementing active
 - `TopN` / `KeysAbove`: `sum(active, warm)`
 
 ```go
