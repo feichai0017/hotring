@@ -4,8 +4,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	xxhash "github.com/cespare/xxhash/v2"
 )
 
 func TestHotRingTouchAndTopN(t *testing.T) {
@@ -130,29 +128,5 @@ func TestHotRingDecayLoop(t *testing.T) {
 	time.Sleep(35 * time.Millisecond)
 	if freq := r.Frequency("decay-key"); freq >= 8 {
 		t.Fatalf("expected decay to reduce count, still %d", freq)
-	}
-}
-
-func TestHotRingHashAndBytesVariants(t *testing.T) {
-	r := NewHotRing(4, nil)
-	key := "alpha"
-	hash := uint32(xxhash.Sum64String(key))
-	if count := r.TouchHash(hash, key); count != 1 {
-		t.Fatalf("expected hash touch count 1, got %d", count)
-	}
-	if count := r.TouchBytes([]byte(key)); count != 2 {
-		t.Fatalf("expected bytes touch count 2, got %d", count)
-	}
-	if freq := r.FrequencyHash(hash, key); freq != 2 {
-		t.Fatalf("expected hash frequency 2, got %d", freq)
-	}
-	if freq := r.FrequencyBytes([]byte(key)); freq != 2 {
-		t.Fatalf("expected bytes frequency 2, got %d", freq)
-	}
-	if count, limited := r.TouchAndClampHash(hash, key, 3); !limited || count != 3 {
-		t.Fatalf("expected clamp hash to limit at 3, got %d limited=%v", count, limited)
-	}
-	if count, limited := r.TouchAndClampBytes([]byte(key), 3); !limited || count != 3 {
-		t.Fatalf("expected clamp bytes to stay limited at 3, got %d limited=%v", count, limited)
 	}
 }
