@@ -61,8 +61,11 @@ func main() {
 | `TouchAndClamp(key, limit)` | Increment unless limit reached; for throttling |
 | `TopN(k)` | Snapshot of hottest keys |
 | `KeysAbove(threshold)` | Keys with counters >= threshold |
+| `Stats()` | Lightweight counters + config snapshot |
+| `SnapshotTopN(k)` | Timestamped Top-N snapshot |
 | `EnableSlidingWindow(slots, dur)` | Short-term hotness |
 | `EnableDecay(interval, shift)` | Long-term cooling |
+| `SetObserver(obs)` | Optional hooks for observability |
 
 ---
 

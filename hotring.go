@@ -17,6 +17,40 @@ type Item struct {
 	Count int32
 }
 
+// Stats exposes lightweight observability data for a HotRing instance.
+type Stats struct {
+	Buckets            int           `json:"buckets"`
+	Nodes              uint64        `json:"nodes"`
+	LoadFactor         float64       `json:"load_factor"`
+	WindowSlots        int           `json:"window_slots"`
+	WindowSlotDuration time.Duration `json:"window_slot_duration"`
+	DecayInterval      time.Duration `json:"decay_interval"`
+	DecayShift         uint32        `json:"decay_shift"`
+	Touches            uint64        `json:"touches"`
+	Inserts            uint64        `json:"inserts"`
+	Removes            uint64        `json:"removes"`
+	Clamps             uint64        `json:"clamps"`
+	DecayRuns          uint64        `json:"decay_runs"`
+	LastDecayUnix      int64         `json:"last_decay_unix"`
+}
+
+// Snapshot captures a point-in-time view of hot keys.
+type Snapshot struct {
+	TakenAt time.Time `json:"taken_at"`
+	Items   []Item    `json:"items"`
+}
+
+// Observer receives optional notifications for observability hooks.
+type Observer interface {
+	OnTouch(key string, count int32)
+	OnClamp(key string, limit int32, count int32)
+	OnDecay(shift uint32)
+}
+
+type observerHolder struct {
+	obs Observer
+}
+
 // HotRing keeps track of frequently accessed keys using lock-free bucketed lists.
 type HotRing struct {
 	hashFn   HashFn
@@ -25,6 +59,19 @@ type HotRing struct {
 
 	windowSlots   atomic.Int32
 	windowSlotDur atomic.Int64
+
+	decayInterval atomic.Int64
+	decayShift    atomic.Uint32
+	lastDecayUnix atomic.Int64
+
+	touches  atomic.Uint64
+	inserts  atomic.Uint64
+	removes  atomic.Uint64
+	clamps   atomic.Uint64
+	decayRuns atomic.Uint64
+	nodes    atomic.Uint64
+
+	observer atomic.Pointer[observerHolder]
 
 	decayMu   sync.Mutex
 	decayStop chan struct{}
@@ -68,8 +115,12 @@ func (h *HotRing) EnableSlidingWindow(slots int, slotDuration time.Duration) {
 func (h *HotRing) EnableDecay(interval time.Duration, shift uint32) {
 	h.stopDecay()
 	if interval <= 0 || shift == 0 {
+		h.decayInterval.Store(0)
+		h.decayShift.Store(0)
 		return
 	}
+	h.decayInterval.Store(interval.Nanoseconds())
+	h.decayShift.Store(shift)
 	h.decayMu.Lock()
 	stop := make(chan struct{})
 	h.decayStop = stop
@@ -121,6 +172,11 @@ func (h *HotRing) applyDecay(shift uint32) {
 	if shift == 0 {
 		return
 	}
+	h.decayRuns.Add(1)
+	h.lastDecayUnix.Store(time.Now().Unix())
+	if obs := h.getObserver(); obs != nil {
+		obs.OnDecay(shift)
+	}
 	for i := range h.buckets {
 		for node := h.buckets[i].Load(); node != nil; node = node.Next() {
 			node.decay(shift)
@@ -158,11 +214,70 @@ func (h *HotRing) incrementNode(node *Node, slots int, slot int64) int32 {
 	return node.GetCounter()
 }
 
+// Stats returns a lightweight view of ring configuration and counters.
+func (h *HotRing) Stats() Stats {
+	if h == nil {
+		return Stats{}
+	}
+	stats := Stats{
+		Buckets:            len(h.buckets),
+		Nodes:              h.nodes.Load(),
+		WindowSlots:        int(h.windowSlots.Load()),
+		WindowSlotDuration: time.Duration(h.windowSlotDur.Load()),
+		DecayInterval:      time.Duration(h.decayInterval.Load()),
+		DecayShift:         h.decayShift.Load(),
+		Touches:            h.touches.Load(),
+		Inserts:            h.inserts.Load(),
+		Removes:            h.removes.Load(),
+		Clamps:             h.clamps.Load(),
+		DecayRuns:          h.decayRuns.Load(),
+		LastDecayUnix:      h.lastDecayUnix.Load(),
+	}
+	if stats.Buckets > 0 {
+		stats.LoadFactor = float64(stats.Nodes) / float64(stats.Buckets)
+	}
+	return stats
+}
+
+// SnapshotTopN captures a Top-N snapshot with a timestamp.
+func (h *HotRing) SnapshotTopN(n int) Snapshot {
+	return Snapshot{TakenAt: time.Now(), Items: h.TopN(n)}
+}
+
+// SnapshotKeysAbove captures a threshold snapshot with a timestamp.
+func (h *HotRing) SnapshotKeysAbove(threshold int32) Snapshot {
+	return Snapshot{TakenAt: time.Now(), Items: h.KeysAbove(threshold)}
+}
+
+// SetObserver registers an optional observer hook.
+func (h *HotRing) SetObserver(obs Observer) {
+	if h == nil {
+		return
+	}
+	if obs == nil {
+		h.observer.Store(nil)
+		return
+	}
+	h.observer.Store(&observerHolder{obs: obs})
+}
+
+func (h *HotRing) getObserver() Observer {
+	if h == nil {
+		return nil
+	}
+	holder := h.observer.Load()
+	if holder == nil {
+		return nil
+	}
+	return holder.obs
+}
+
 // Touch records a key access and returns the updated counter.
 func (h *HotRing) Touch(key string) int32 {
 	if h == nil || key == "" {
 		return 0
 	}
+	h.touches.Add(1)
 	slot, slots := h.slotState()
 	index, tag := h.hashParts(key)
 	compareItem := NewNode(key, tag)
@@ -170,10 +285,18 @@ func (h *HotRing) Touch(key string) int32 {
 	if node == nil {
 		return 0
 	}
+	if inserted {
+		h.inserts.Add(1)
+		h.nodes.Add(1)
+	}
 	if inserted && slots == 0 {
 		node.ResetCounter()
 	}
-	return h.incrementNode(node, slots, slot)
+	count := h.incrementNode(node, slots, slot)
+	if obs := h.getObserver(); obs != nil {
+		obs.OnTouch(key, count)
+	}
+	return count
 }
 
 // Frequency returns the current access counter for key without mutating state.
@@ -196,6 +319,7 @@ func (h *HotRing) TouchAndClamp(key string, limit int32) (count int32, limited b
 	if limit <= 0 {
 		return h.Touch(key), false
 	}
+	h.touches.Add(1)
 	slot, slots := h.slotState()
 	index, tag := h.hashParts(key)
 	compareItem := NewNode(key, tag)
@@ -203,15 +327,32 @@ func (h *HotRing) TouchAndClamp(key string, limit int32) (count int32, limited b
 	if node == nil {
 		return 0, false
 	}
+	if inserted {
+		h.inserts.Add(1)
+		h.nodes.Add(1)
+	}
 	if inserted && slots == 0 {
 		node.ResetCounter()
 	}
 	current := h.nodeCount(node, slots, slot)
 	if current >= limit {
+		h.clamps.Add(1)
+		if obs := h.getObserver(); obs != nil {
+			obs.OnClamp(key, limit, current)
+		}
 		return current, true
 	}
 	count = h.incrementNode(node, slots, slot)
-	return count, count >= limit
+	limited = count >= limit
+	if limited {
+		h.clamps.Add(1)
+		if obs := h.getObserver(); obs != nil {
+			obs.OnClamp(key, limit, count)
+		}
+	} else if obs := h.getObserver(); obs != nil {
+		obs.OnTouch(key, count)
+	}
+	return count, limited
 }
 
 func (h *HotRing) Remove(key string) {
@@ -230,11 +371,15 @@ func (h *HotRing) Remove(key string) {
 				next := curr.Next()
 				if prev == nil {
 					if bucket.CompareAndSwap(head, next) {
+						h.removes.Add(1)
+						h.nodes.Add(^uint64(0))
 						return
 					}
 					break
 				}
 				if prev.CompareAndSwapNext(curr, next) {
+					h.removes.Add(1)
+					h.nodes.Add(^uint64(0))
 					return
 				}
 				break
