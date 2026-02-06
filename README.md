@@ -14,6 +14,7 @@ HotRing is designed to be a **system-level hotness signal** rather than a cache 
 - **Top-N snapshots** for diagnostics and scheduling
 - **Touch-and-clamp** for throttling hot keys
 - **Node cap + stable sampling** for high-cardinality control
+- **Optional ring rotation** for bounded memory + recent hotness
 
 ---
 
@@ -41,6 +42,7 @@ func main() {
     ring := hotring.NewHotRing(12, nil) // 4096 buckets
     ring.EnableSlidingWindow(8, 250*time.Millisecond)
     ring.EnableDecay(time.Second, 1)
+    ring.EnableNodeSampling(1_000_000, 4) // optional cap + sampling
 
     ring.Touch("user:1")
     ring.Touch("user:1")
@@ -49,6 +51,22 @@ func main() {
     fmt.Println("user:1", ring.Frequency("user:1"))
     fmt.Println("top", ring.TopN(2))
 }
+```
+
+---
+
+## Rotation (Optional)
+
+For long-running systems that only need *recent* hotness, use ring rotation to
+bound memory and naturally forget old keys.
+
+```go
+ring := hotring.NewRotatingHotRing(12, nil)
+ring.EnableNodeSampling(1_000_000, 0)   // strict cap
+ring.EnableRotation(10 * time.Minute)  // rotate periodically
+
+ring.Touch("user:1")
+fmt.Println(ring.TopN(10))
 ```
 
 ---
@@ -68,6 +86,15 @@ func main() {
 | `EnableDecay(interval, shift)` | Long-term cooling |
 | `EnableNodeSampling(cap, sampleBits)` | Cap node growth with stable sampling |
 | `SetObserver(obs)` | Optional hooks for observability |
+
+Rotating ring helpers:
+
+| Method | Purpose |
+| --- | --- |
+| `NewRotatingHotRing(bits, fn)` | Ring wrapper with rotation support |
+| `EnableRotation(interval)` | Periodic rotation (<=0 disables) |
+| `Rotate()` | Manual rotation |
+| `RotationStats()` | Rotation counters + config |
 
 ---
 
