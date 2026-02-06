@@ -1,5 +1,7 @@
 # HotRing
 
+[![CI](https://github.com/feichai0017/hotring/actions/workflows/ci.yml/badge.svg)](https://github.com/feichai0017/hotring/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/feichai0017/hotring.svg)](https://pkg.go.dev/github.com/feichai0017/hotring)
+
 A lightweight, concurrent hot-key tracker extracted from NoKV.
 
 HotRing is designed to be a **system-level hotness signal** rather than a cache policy: it tracks read/write frequencies at high throughput, surfaces Top-N hotspots, and supports short-term bursts via sliding windows and long-term decay via periodic aging.
